@@ -1,119 +1,58 @@
-        for i, camera_name in enumerate(camera_names):
-            handler = camera_handlers[camera_name]
-            transformer = perspective_transformers[camera_name]
-            extractor = segment_extractors[camera_name]
+    # コントロールボタン
+    # ストリーミング状態に応じたボタン表示
+    if not st.session_state["streaming"]:
+        if st.button("▶️ Start process"):
+            # カルマンフィルタインスタンスを作成
+            kalman_filters = []
 
-            snapshot = handler.get_snapshot()
-            if snapshot.status_code == 200:
-                # 画像をデコード
-                frame = cv2.imdecode(
-                    np.frombuffer(snapshot.content, dtype=np.uint8), cv2.IMREAD_COLOR
-                )
+            # # dequeを使った時系列データ構造の作成
+            # time_series_data = []
 
-                # raw imageをプレースホルダーに表示
-                placeholders_raw[i].image(frame, channels="BGR", caption=camera_name)
+            # # 時系列データの最大長を設定
+            # max_history = app_config.get("time_chart", {}).get("max_history", 100)
 
-                # 保存モードならフレームを保存
-                if app_config["process"]["save_image"]:
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    save_path = os.path.join(
-                        "./data/image", camera_name, f"{timestamp}.jpg"
+            for i, camera_name in enumerate(camera_names):
+                number_of_segments = segment_extractors[camera_name].number
+
+                # 各カメラの各セグメントにカルマンフィルタを作成
+                kalman_filters.append([])
+                # # 各カメラの時系列データ構造
+                # time_series_data.append([])
+
+                for _ in range(number_of_segments):
+                    # カルマンフィルタの初期化
+                    kalman_filters[i].append(
+                        KalmanPointFilter(
+                            process_noise=app_config["kalman_filter"]["process_noise"],
+                            measurement_noise=app_config["kalman_filter"][
+                                "measurement_noise"
+                            ],
+                        )
                     )
-                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                    cv2.imwrite(save_path, frame)
 
-                # フレームをセッション状態に保存
-                st.session_state["current_frames"][camera_name] = frame.copy()
+                    # # 各セグメントのdequeを初期化
+                    # time_series_data[i].append(
+                    #     {
+                    #         "raw_x": deque(maxlen=max_history),
+                    #         "raw_y": deque(maxlen=max_history),
+                    #         "kalman_x": deque(maxlen=max_history),
+                    #         "kalman_y": deque(maxlen=max_history),
+                    #         "timestamps": deque(maxlen=max_history),
+                    #     }
+                    # )
 
-                # 透視投影補正
-                transformed_frame = transformer.transform(frame)
-                # プレースホルダーに画像を表示
-                placeholders_perspective[i].image(
-                    transformed_frame, channels="BGR", caption=camera_name
-                )
+            st.session_state["kalman_filters"] = kalman_filters
+            # st.session_state["time_series_data"] = time_series_data
+            # st.session_state["max_history"] = max_history
+            # logger.info(
+            #     f"Process started. Time series data limited to {max_history} points."
+            # )
+            st.session_state["streaming"] = True
+            st.session_state["process_start_time"] = datetime.now()
 
-                # Segmentsを抽出
-                segmented_images = extractor.extract(transformed_frame)
-                seg_names = app_config["camera"]["individual"][i]["segment"]["names"]
-
-                # プレースホルダーに画像を表示
-                for j, segment in enumerate(segmented_images):
-                    try:
-                        # save_segment = trueの場合はセグメントを保存
-                        if app_config["process"]["save_segment"]:
-                            timestamp = time.strftime("%Y%m%d_%H%M%S")
-                            dir = "workspace/data/image/train/no_anotation"
-                            name = f"{camera_name}_{seg_names[j]}_{timestamp}.jpg"
-                            save_path = os.path.join(dir, name)
-                            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                            cv2.imwrite(save_path, segment)
-
-                        # CascadeClassifierを使用して物体検出
-                        # detection, point = cascade_classifier.detect(segment)
-
-                        # Probabilistic Houghを使用してエンドポイント検出
-                        detection, point = hough_detector.detect(segment)
-                        
-                        # 検出結果をログに記録
-                        print(point)
-
-                        # カルマンフィルタを適用
-                        kalman_point = st.session_state["kalman_filters"][i][j].update(
-                            point
-                        )
-
-                        # # 時系列データの更新（dequeを使用）
-                        # if "time_series_data" in st.session_state:
-                        #     data = st.session_state["time_series_data"][i][j]
-                        #     # 現在時刻を取得
-                        #     current_time = time.time()
-
-                        #     # dequeは自動的に最大長を管理するので、単純に追加するだけでよい
-                        #     data["raw_x"].append(point[0] if detection else None)
-                        #     data["raw_y"].append(point[1] if detection else None)
-                        #     data["kalman_x"].append(kalman_point[0])
-                        #     data["kalman_y"].append(kalman_point[1])
-                        #     data["timestamps"].append(current_time)
-
-                        # # 検出された場合,赤い円を描画
-                        # if detection:
-                        #     cv2.circle(
-                        #         segment,
-                        #         (point[0], point[1]),
-                        #         3,
-                        #         (0, 0, 255),
-                        #         -1,
-                        #     )
-
-                        # カルマンフィルタの結果を円で描画
-                        # 検出された場合は緑、検出されておらずFilteringによる推定の場合は緑
-                        if detection:
-                            color = (0, 0, 255)  # 赤色
-                        else:
-                            color = (0, 255, 0)  # 緑色
-                        if kalman_point[0] is not None and kalman_point[1] is not None:
-                            # 検出された場合は赤、検出されておらずFilteringによる推定の場合は緑
-                            cv2.circle(
-                                segment,
-                                kalman_point,
-                                3,
-                                color,  # 緑色
-                                -1,
-                            )
-
-                        # 保存したプレースホルダー参照を使用して画像を表示
-                        placeholders[i][j].image(
-                            segment,
-                            channels="BGR",
-                            caption=seg_names[j],
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to display segment {j}: {e}")
-            else:
-                # contentにはエラー画像が含まれているため、そのまま表示可能
-                frame = cv2.imdecode(
-                    np.frombuffer(snapshot.content, dtype=np.uint8), cv2.IMREAD_COLOR
-                )
-                logger.error(
-                    f"Failed to get snapshot from camera {camera_name}. Status code: {snapshot.status_code}"
-                )
+            st.rerun()
+    else:
+        if st.button("⏸️ Stop process"):
+            logger.info("Process stopped.")
+            st.session_state["streaming"] = False
+            st.rerun()
