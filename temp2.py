@@ -1,96 +1,85 @@
-class KalmanPointFilter:
-    """
-    カルマンフィルタを使用して点の位置を推定するクラス
-    """
-
-    def __init__(self, process_noise=0.01, measurement_noise=0.1):
+    def detect_endpoints(self, img_pil: Image.Image) -> Tuple[bool, Tuple[int, int]]:
         """
-        Args:
-            process_noise: プロセスノイズ（システムモデルの不確かさ）
-            measurement_noise: 測定ノイズ（検出値の不確かさ）
-        """
-        # カルマンフィルタの初期化
-        self.kalman = cv2.KalmanFilter(
-            4, 2
-        )  # 状態変数4次元(x,y,dx,dy), 測定値2次元(x,y)
-
-        # 状態遷移行列 (A)
-        self.kalman.transitionMatrix = np.array(
-            [
-                [1, 0, 1, 0],  # x = x + dx
-                [0, 1, 0, 1],  # y = y + dy
-                [0, 0, 1, 0],  # dx = dx (速度は一定と仮定)
-                [0, 0, 0, 1],  # dy = dy (速度は一定と仮定)
-            ],
-            np.float32,
-        )
-
-        # 測定行列 (H) - 状態から測定値への変換
-        self.kalman.measurementMatrix = np.array(
-            [
-                [1, 0, 0, 0],  # 測定値xは状態変数xに対応
-                [0, 1, 0, 0],  # 測定値yは状態変数yに対応
-            ],
-            np.float32,
-        )
-
-        # プロセスノイズ共分散行列 (Q)
-        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * process_noise
-
-        # 測定ノイズ共分散行列 (R)
-        self.kalman.measurementNoiseCov = (
-            np.eye(2, dtype=np.float32) * measurement_noise
-        )
-
-        # 事後誤差推定共分散行列 (P)
-        self.kalman.errorCovPost = np.eye(4, dtype=np.float32)
-
-        # フィルタが初期化されたかどうか
-        self.initialized = False
-
-    def update(self, point):
-        """
-        測定値を使用してフィルタを更新し、推定位置を返す
-
-        Args:
-            point: 検出された点の(x, y)座標。検出されなかった場合は(None, None)
-
+        检测图像中的红色线段端点，并返回是否成功检测到 + 最接近中心的点（图像中心为原点的整数坐标）。
+        
         Returns:
-            推定された点の(x, y)座標
+            success: 是否检测到符合条件的端点
+            point: (x, y) 坐标（以图像中心为原点），单位像素，int 类型
         """
-        x, y = point
+        bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        H, W = bgr.shape[:2]
+        cx, cy = W // 2.0, H // 2.0
 
-        # 検出点が無効な場合
-        if x is None or y is None:
-            if not self.initialized:
-                # フィルタが初期化されていない場合は推定不能
-                return (None, None)
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, (0, 100, 80), (10, 255, 255))
+        mask |= cv2.inRange(hsv, (160, 100, 80), (180, 255, 255))
 
-            # 予測のみを実行して推定値を返す（測定値の更新なし）
-            predicted = self.kalman.predict()
-            return (int(predicted[0][0]), int(predicted[1][0]))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, 1) # より強いノイズ除去、消したらより多くの検出出来る
 
-        # 検出点を測定値として設定
-        measurement = np.array([[x], [y]], dtype=np.float32)
+        segments = cv2.HoughLinesP(mask, 1, np.pi / 180,
+                                threshold=self.hough_thresh,
+                                minLineLength=self.min_len,
+                                maxLineGap=self.max_gap)
+        if segments is None:
+            return False, (None, None)
 
-        if not self.initialized:
-            # 初めての有効な検出点ならフィルタを初期化
-            self.kalman.statePost = np.array(
-                [[x], [y], [0], [0]],  # 初期状態: 位置=(x,y), 速度=(0,0)
-                dtype=np.float32,
-            )
-            self.initialized = True
-            return (x, y)
+        segs = segments[:, 0]
+        groups = []
+        for x1, y1, x2, y2 in segs:
+            theta = atan2(y2 - y1, x2 - x1)
+            if theta < 0:
+                theta += pi
+            n = np.array([np.sin(theta), -np.cos(theta)])
+            rho = n.dot((x1, y1))
+            for g in groups:
+                mean_theta, mean_rho, gsegs = g
+                dth = min(abs(theta - mean_theta), pi - abs(theta - mean_theta))
+                if dth < self.tol_theta and abs(rho - mean_rho) < self.tol_rho_px:
+                    gsegs.append((x1, y1, x2, y2))
+                    k = len(gsegs)
+                    g[0] = (mean_theta * (k - 1) + theta) / k
+                    g[1] = (mean_rho * (k - 1) + rho) / k
+                    break
+            else:
+                groups.append([theta, rho, [(x1, y1, x2, y2)]])
 
-        # カルマンフィルタの予測ステップ
-        predicted = self.kalman.predict()
+        top_band = self.edge_pct * H
+        bottom_band = (1 - self.edge_pct) * H
+        left_thr = self.side_pct * W
+        right_thr = (1 - self.side_pct) * W
 
-        # カルマンフィルタの修正ステップ（測定値で更新）
-        corrected = self.kalman.correct(measurement)
+        closest_point = None
+        min_dist = float('inf')
 
-        # 補正された推定値を返す
-        return (int(corrected[0][0]), int(corrected[1][0]))
+        for _, _, gsegs in groups:
+            pts = np.array([(x1, y1) for x1, y1, _, _ in gsegs] +
+                        [(x2, y2) for _, _, x2, y2 in gsegs])
+            d2 = np.sum((pts[:, None] - pts[None]) ** 2, axis=2)
+            i, j = np.unravel_index(np.argmax(d2), d2.shape)
+            (x1, y1), (x2, y2) = pts[i], pts[j]
 
-    def reset(self):
-        """フィルタをリセットする"""
-        self.initialized = False
+            angle_deg = abs(atan2(y2 - y1, x2 - x1)) * 180 / pi
+            if angle_deg > self.angle_thr_deg:
+                continue
+            if (y1 < top_band and y2 < top_band) or (y1 > bottom_band and y2 > bottom_band):
+                continue
+            in_left = (x1 <= left_thr) or (x2 <= left_thr)
+            in_right = (x1 >= right_thr) or (x2 >= right_thr)
+            if not (in_left ^ in_right):
+                continue
+
+            pt1 = (x1 - cx, cy - y1)
+            pt2 = (x2 - cx, cy - y2)
+
+            for pt in [pt1, pt2]:
+                if abs(pt[0]) > (self.side_pct * W / 2):
+                    dist = pt[0] ** 2 + pt[1] ** 2
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_point = pt
+
+        if closest_point:
+            return True, (int(round(closest_point[0])), int(round(closest_point[1])))
+        else:
+            return False, (None, None)
