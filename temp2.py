@@ -1,86 +1,119 @@
+        for i, camera_name in enumerate(camera_names):
+            handler = camera_handlers[camera_name]
+            transformer = perspective_transformers[camera_name]
+            extractor = segment_extractors[camera_name]
 
-    def detect_endpoints(self, img_pil: Image.Image) -> Tuple[bool, Tuple[int, int]]:
-        """
-        检测图像中的红色线段端点，并返回是否成功检测到 + 最接近中心的点（图像中心为原点的整数坐标）。
-        
-        Returns:
-            success: 是否检测到符合条件的端点
-            point: (x, y) 坐标（以图像中心为原点），单位像素，int 类型
-        """
-        bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-        H, W = bgr.shape[:2]
-        cx, cy = W // 2.0, H // 2.0
+            snapshot = handler.get_snapshot()
+            if snapshot.status_code == 200:
+                # 画像をデコード
+                frame = cv2.imdecode(
+                    np.frombuffer(snapshot.content, dtype=np.uint8), cv2.IMREAD_COLOR
+                )
 
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, (0, 100, 80), (10, 255, 255))
-        mask |= cv2.inRange(hsv, (160, 100, 80), (180, 255, 255))
+                # raw imageをプレースホルダーに表示
+                placeholders_raw[i].image(frame, channels="BGR", caption=camera_name)
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, 1) # より強いノイズ除去、消したらより多くの検出出来る
+                # 保存モードならフレームを保存
+                if app_config["process"]["save_image"]:
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    save_path = os.path.join(
+                        "./data/image", camera_name, f"{timestamp}.jpg"
+                    )
+                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                    cv2.imwrite(save_path, frame)
 
-        segments = cv2.HoughLinesP(mask, 1, np.pi / 180,
-                                threshold=self.hough_thresh,
-                                minLineLength=self.min_len,
-                                maxLineGap=self.max_gap)
-        if segments is None:
-            return False, (None, None)
+                # フレームをセッション状態に保存
+                st.session_state["current_frames"][camera_name] = frame.copy()
 
-        segs = segments[:, 0]
-        groups = []
-        for x1, y1, x2, y2 in segs:
-            theta = atan2(y2 - y1, x2 - x1)
-            if theta < 0:
-                theta += pi
-            n = np.array([np.sin(theta), -np.cos(theta)])
-            rho = n.dot((x1, y1))
-            for g in groups:
-                mean_theta, mean_rho, gsegs = g
-                dth = min(abs(theta - mean_theta), pi - abs(theta - mean_theta))
-                if dth < self.tol_theta and abs(rho - mean_rho) < self.tol_rho_px:
-                    gsegs.append((x1, y1, x2, y2))
-                    k = len(gsegs)
-                    g[0] = (mean_theta * (k - 1) + theta) / k
-                    g[1] = (mean_rho * (k - 1) + rho) / k
-                    break
+                # 透視投影補正
+                transformed_frame = transformer.transform(frame)
+                # プレースホルダーに画像を表示
+                placeholders_perspective[i].image(
+                    transformed_frame, channels="BGR", caption=camera_name
+                )
+
+                # Segmentsを抽出
+                segmented_images = extractor.extract(transformed_frame)
+                seg_names = app_config["camera"]["individual"][i]["segment"]["names"]
+
+                # プレースホルダーに画像を表示
+                for j, segment in enumerate(segmented_images):
+                    try:
+                        # save_segment = trueの場合はセグメントを保存
+                        if app_config["process"]["save_segment"]:
+                            timestamp = time.strftime("%Y%m%d_%H%M%S")
+                            dir = "workspace/data/image/train/no_anotation"
+                            name = f"{camera_name}_{seg_names[j]}_{timestamp}.jpg"
+                            save_path = os.path.join(dir, name)
+                            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                            cv2.imwrite(save_path, segment)
+
+                        # CascadeClassifierを使用して物体検出
+                        # detection, point = cascade_classifier.detect(segment)
+
+                        # Probabilistic Houghを使用してエンドポイント検出
+                        detection, point = hough_detector.detect(segment)
+                        
+                        # 検出結果をログに記録
+                        print(point)
+
+                        # カルマンフィルタを適用
+                        kalman_point = st.session_state["kalman_filters"][i][j].update(
+                            point
+                        )
+
+                        # # 時系列データの更新（dequeを使用）
+                        # if "time_series_data" in st.session_state:
+                        #     data = st.session_state["time_series_data"][i][j]
+                        #     # 現在時刻を取得
+                        #     current_time = time.time()
+
+                        #     # dequeは自動的に最大長を管理するので、単純に追加するだけでよい
+                        #     data["raw_x"].append(point[0] if detection else None)
+                        #     data["raw_y"].append(point[1] if detection else None)
+                        #     data["kalman_x"].append(kalman_point[0])
+                        #     data["kalman_y"].append(kalman_point[1])
+                        #     data["timestamps"].append(current_time)
+
+                        # # 検出された場合,赤い円を描画
+                        # if detection:
+                        #     cv2.circle(
+                        #         segment,
+                        #         (point[0], point[1]),
+                        #         3,
+                        #         (0, 0, 255),
+                        #         -1,
+                        #     )
+
+                        # カルマンフィルタの結果を円で描画
+                        # 検出された場合は緑、検出されておらずFilteringによる推定の場合は緑
+                        if detection:
+                            color = (0, 0, 255)  # 赤色
+                        else:
+                            color = (0, 255, 0)  # 緑色
+                        if kalman_point[0] is not None and kalman_point[1] is not None:
+                            # 検出された場合は赤、検出されておらずFilteringによる推定の場合は緑
+                            cv2.circle(
+                                segment,
+                                kalman_point,
+                                3,
+                                color,  # 緑色
+                                -1,
+                            )
+
+                        # 保存したプレースホルダー参照を使用して画像を表示
+                        placeholders[i][j].image(
+                            segment,
+                            channels="BGR",
+                            caption=seg_names[j],
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to display segment {j}: {e}")
             else:
-                groups.append([theta, rho, [(x1, y1, x2, y2)]])
-
-        top_band = self.edge_pct * H
-        bottom_band = (1 - self.edge_pct) * H
-        left_thr = self.side_pct * W
-        right_thr = (1 - self.side_pct) * W
-
-        closest_point = None
-        min_dist = float('inf')
-
-        for _, _, gsegs in groups:
-            pts = np.array([(x1, y1) for x1, y1, _, _ in gsegs] +
-                        [(x2, y2) for _, _, x2, y2 in gsegs])
-            d2 = np.sum((pts[:, None] - pts[None]) ** 2, axis=2)
-            i, j = np.unravel_index(np.argmax(d2), d2.shape)
-            (x1, y1), (x2, y2) = pts[i], pts[j]
-
-            angle_deg = abs(atan2(y2 - y1, x2 - x1)) * 180 / pi
-            if angle_deg > self.angle_thr_deg:
-                continue
-            if (y1 < top_band and y2 < top_band) or (y1 > bottom_band and y2 > bottom_band):
-                continue
-            in_left = (x1 <= left_thr) or (x2 <= left_thr)
-            in_right = (x1 >= right_thr) or (x2 >= right_thr)
-            if not (in_left ^ in_right):
-                continue
-
-            pt1 = (x1 - cx, cy - y1)
-            pt2 = (x2 - cx, cy - y2)
-
-            for pt in [pt1, pt2]:
-                if abs(pt[0]) > (self.side_pct * W / 2):
-                    dist = pt[0] ** 2 + pt[1] ** 2
-                    if dist < min_dist:
-                        min_dist = dist
-                        closest_point = pt
-
-        if closest_point:
-            return True, (int(round(closest_point[0])), int(round(closest_point[1])))
-        else:
-            return False, (None, None)
+                # contentにはエラー画像が含まれているため、そのまま表示可能
+                frame = cv2.imdecode(
+                    np.frombuffer(snapshot.content, dtype=np.uint8), cv2.IMREAD_COLOR
+                )
+                logger.error(
+                    f"Failed to get snapshot from camera {camera_name}. Status code: {snapshot.status_code}"
+                )
