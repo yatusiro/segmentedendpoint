@@ -1,50 +1,187 @@
-import cv2
-import numpy as np
-
-
-class CascadeClassifier:
-    def __init__(
-        self,
-        cascade_path,
-        min_size=(30, 30),
-        max_size=(300, 300),
-        min_neighbors=3,
-        scale_factor=1.1,
-    ):
+def detect_endpoints_test(self, img_pil: Image.Image) -> Tuple[bool, Tuple[int, int], Tuple[int, int]]:
         """
-        Initialize the CascadeClassifier with the path to the cascade classifier XML file.
-        Args:
-            cascade_path: Path to the cascade classifier XML file.
-        """
-        self.min_size = min_size
-        self.max_size = max_size
-        self.min_neighbors = min_neighbors
-        self.scale_factor = scale_factor
-        self.cascade = cv2.CascadeClassifier(cascade_path)
-
-    def detect(self, image):
-        """
-        Detect only one object in the image.
-        Args:
-            image: Input image in BGR format.
+        检测图像中的红色线段端点，并返回是否成功检测到 + 最接近中心的点（图像中心为原点的整数坐标）+ 其对应端点。
 
         Returns:
-            success: bool, True if an object is detected, False otherwise.
-            position: tuple, (x, y) center coordinates of the detected object.
+            success: 是否检测到符合条件的端点
+            point: (x, y) 坐标（以图像中心为原点），单位像素，int 类型
+            other_point: 与该点同属一条线段的另一个端点（也为以图像中心为原点的坐标）
         """
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        object = self.cascade.detectMultiScale(
-            gray,
-            scaleFactor=self.scale_factor,
-            minNeighbors=self.min_neighbors,
-            minSize=self.min_size,
-            maxSize=self.max_size,
-        )
-        if len(object) > 0:
-            # detect only one object
-            x, y, w, h = object[0]
-            center_x = int(x + w / 2)
-            center_y = int(y + h / 2)
-            return True, (center_x, center_y)
+        number=1
+        bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        H, W = bgr.shape[:2]
+        cx, cy = W // 2.0, H // 2.0
+
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, (0, 100, 80), (10, 255, 255))
+        mask |= cv2.inRange(hsv, (160, 100, 80), (180, 255, 255))
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, 1)
+
+        segments = cv2.HoughLinesP(mask, 1, np.pi / 180,
+                                threshold=self.hough_thresh,
+                                minLineLength=self.min_len,
+                                maxLineGap=self.max_gap)
+        if segments is None:
+            return False, (None, None), (None, None)
+
+        segs = segments[:, 0]
+        groups = []
+        for x1, y1, x2, y2 in segs:
+            theta = atan2(y2 - y1, x2 - x1)
+            if theta < 0:
+                theta += pi
+            n = np.array([np.sin(theta), -np.cos(theta)])
+            rho = n.dot((x1, y1))
+            for g in groups:
+                mean_theta, mean_rho, gsegs = g
+                dth = min(abs(theta - mean_theta), pi - abs(theta - mean_theta))
+                if dth < self.tol_theta and abs(rho - mean_rho) < self.tol_rho_px:
+                    gsegs.append((x1, y1, x2, y2))
+                    k = len(gsegs)
+                    g[0] = (mean_theta * (k - 1) + theta) / k
+                    g[1] = (mean_rho * (k - 1) + rho) / k
+                    break
+            else:
+                groups.append([theta, rho, [(x1, y1, x2, y2)]])
+
+        top_band = self.edge_pct * H
+        bottom_band = (1 - self.edge_pct) * H
+
+        closest_point = None
+        corresponding_point = None  # ← 新增变量
+        min_dist = float('inf')
+        side_threshold = self.side_pct * W   # 图像中心坐标系下的边缘阈值
+
+        for _, _, gsegs in groups:
+            pts = np.array([(x1, y1) for x1, y1, _, _ in gsegs] +
+                        [(x2, y2) for _, _, x2, y2 in gsegs])
+            d2 = np.sum((pts[:, None] - pts[None]) ** 2, axis=2)
+            i, j = np.unravel_index(np.argmax(d2), d2.shape)
+            (x1, y1), (x2, y2) = pts[i], pts[j]
+
+            angle_deg = abs(atan2(y2 - y1, x2 - x1)) * 180 / pi
+            if angle_deg > self.angle_thr_deg:
+                continue
+            if (y1 < top_band and y2 < top_band) or (y1 > bottom_band and y2 > bottom_band):
+                continue
+
+            pt1 = (x1 - cx, cy - y1)
+            pt2 = (x2 - cx, cy - y2)
+
+            in_edge1 = abs(pt1[0]) > W/2 - side_threshold
+            in_edge2 = abs(pt2[0]) > W/2 - side_threshold
+            print(f"--------------------------------------{number}--------------------------------------")
+            number+=1
+            print(f"abs(pt1[0]): {abs(pt1[0])}, in_edge1: {in_edge1}, abs(pt2[0]): {abs(pt2[0])}, in_edge2: {in_edge2}")
+            # in_edge1 = True
+            # in_edge2 = False
+
+            # 一个在边缘区域，一个在非边缘区域
+            if in_edge1 ^ in_edge2:
+                candidate = pt1 if not in_edge1 else pt2
+                other = pt2 if not in_edge1 else pt1  # ← 对应的端点
+
+                dist = candidate[0] ** 2 + candidate[1] ** 2
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_point = candidate
+                    corresponding_point = other
+
+        if closest_point:
+            return True, (
+                int(round(closest_point[0])),
+                int(round(closest_point[1]))
+            ), (
+                int(round(corresponding_point[0])),
+                int(round(corresponding_point[1]))
+            )
         else:
-            return False, (None, None)
+            return False, (None, None), (None, None)
+
+    def detect_endpoints(self, img_pil: Image.Image) -> Tuple[bool, Tuple[int, int], Tuple[int, int]]:
+        bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        H, W = bgr.shape[:2]
+        cx, cy = W // 2.0, H // 2.0
+
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, (0, 100, 80), (10, 255, 255))
+        mask |= cv2.inRange(hsv, (160, 100, 80), (180, 255, 255))
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))# （3,3）侵食範囲
+        # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, 1) # より強いノイズ除去、消したらより多くの検出出来る
+
+        segments = cv2.HoughLinesP(mask, 1, np.pi / 180,
+                                   threshold=self.hough_thresh,
+                                   minLineLength=self.min_len,
+                                   maxLineGap=self.max_gap)
+        if segments is None:
+            return False, (None, None), (None, None)
+
+        segs = segments[:, 0]
+        groups = []
+        for x1, y1, x2, y2 in segs:
+            theta = atan2(y2 - y1, x2 - x1)
+            if theta < 0:
+                theta += pi
+            n = np.array([np.sin(theta), -np.cos(theta)])
+            rho = n.dot((x1, y1))
+            for g in groups:
+                mean_theta, mean_rho, gsegs = g
+                dth = min(abs(theta - mean_theta), pi - abs(theta - mean_theta))
+                if dth < self.tol_theta and abs(rho - mean_rho) < self.tol_rho_px:
+                    gsegs.append((x1, y1, x2, y2))
+                    k = len(gsegs)
+                    g[0] = (mean_theta * (k - 1) + theta) / k
+                    g[1] = (mean_rho * (k - 1) + rho) / k
+                    break
+            else:
+                groups.append([theta, rho, [(x1, y1, x2, y2)]])
+
+        top_band = self.edge_pct * H
+        bottom_band = (1 - self.edge_pct) * H
+        left_thr = self.side_pct * W
+        right_thr = (1 - self.side_pct) * W
+
+        closest_point = None
+        other_point = None
+        min_dist = float('inf')
+
+        for _, _, gsegs in groups:
+            pts = np.array([(x1, y1) for x1, y1, _, _ in gsegs] +
+                           [(x2, y2) for _, _, x2, y2 in gsegs])
+            d2 = np.sum((pts[:, None] - pts[None]) ** 2, axis=2)
+            i, j = np.unravel_index(np.argmax(d2), d2.shape)
+            (x1, y1), (x2, y2) = pts[i], pts[j]
+
+            angle_deg = abs(atan2(y2 - y1, x2 - x1)) * 180 / pi
+            if angle_deg > self.angle_thr_deg:
+                continue
+            if (y1 < top_band and y2 < top_band) or (y1 > bottom_band and y2 > bottom_band):
+                continue
+            in_left = (x1 <= left_thr) or (x2 <= left_thr)
+            in_right = (x1 >= right_thr) or (x2 >= right_thr)
+            if not (in_left ^ in_right):
+                continue
+
+            pt1 = (x1 - cx, cy - y1)
+            pt2 = (x2 - cx, cy - y2)
+
+            for a, b in [(pt1, pt2), (pt2, pt1)]:
+                if abs(a[0]) > (self.side_pct * W / 2):
+                    dist = a[0] ** 2 + a[1] ** 2
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_point = a
+                        other_point = b
+
+        if closest_point:
+            return True, (int(round(closest_point[0])), int(round(closest_point[1]))), \
+                         (int(round(other_point[0])), int(round(other_point[1])))
+        else:
+            return False, (None, None), (None, None)
+
+    def detect(self, image: Image.Image) -> Tuple[bool, Tuple[int, int], Tuple[int, int]]:
+        processed = self.preprocess_image(image)
+        return self.detect_endpoints_test(processed)
