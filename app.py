@@ -108,7 +108,9 @@ def main():
     frame_interval = 1.0 / fps
 
     # プレースホルダー定義(2次元リスト)
-    placeholders = []
+    # placeholders = []
+    placeholders_img = []
+    placeholders_txt = []
 
     # 台形補正のプレースホルダー
     placeholders_perspective = []
@@ -122,13 +124,18 @@ def main():
     with tab1:
         cols = []
         for i, camera_name in enumerate(camera_names):
-            placeholders.append([])
+            placeholders_img.append([])
+            placeholders_txt.append([])
             st.write(f"{camera_name}")
             cols.append(st.columns(segment_extractors[camera_name].number))
             # プレースホルダーを作成
             for col in cols[i]:
-                with col:
-                    placeholders[i].append(st.empty())
+                with col.container():
+                    ph_img = st.empty()
+                    ph_txt = st.empty()
+                    placeholders_img[i].append(ph_img)
+                    placeholders_txt[i].append(ph_txt)
+                    
 
     with tab2:
         for i, camera_name in enumerate(camera_names):
@@ -230,16 +237,33 @@ def main():
                 seg_names = app_config["camera"]["individual"][i]["segment"]["names"]
 
                 # プレースホルダーに画像を表示
+
+                # for j, segment in enumerate(segmented_images):
+                #     try:
+                #         # 保存したプレースホルダー参照を使用して画像を表示
+                #         placeholders_img[i][j].image(
+                #             segment,
+                #             channels="BGR",
+                #         )
+                #         caption = f"{j+1}\n(-- mm, -- mm)"
+                #         placeholders_txt[i][j].markdown(caption, unsafe_allow_html=True)
+
+                #     except Exception as e:
+                #         logger.warning(f"Failed to display segment {j}: {e}")
+                
                 for j, segment in enumerate(segmented_images):
                     try:
                         # 保存したプレースホルダー参照を使用して画像を表示
-                        placeholders[i][j].image(
+                        placeholders_img[i][j].image(
                             segment,
                             channels="BGR",
-                            caption=seg_names[j],
+                            use_container_width=True,
                         )
+                        placeholders_txt[i][j].markdown(f"div style='text-align: center;'>{seg_names[j]}</br>(-- mm, -- mm)</div>", unsafe_allow_html=True)
+
                     except Exception as e:
                         logger.warning(f"Failed to display segment {j}: {e}")
+                
 
     # ストリーミング処理
     while st.session_state["streaming"]:
@@ -380,11 +404,26 @@ def main():
                         
 
                         # 保存したプレースホルダー参照を使用して画像を表示
-                        placeholders[i][j].image(
+                        placeholders_img[i][j].image(
                             segment,
                             channels="BGR",
-                            caption=seg_names[j],
                         )
+                        if detection:
+                            x_py, y_py = point
+                            coord = f"({x_py:.1f} mm , {y_py:.1f} mm)"
+                        else:
+                            x_py, y_py = kalman_point
+                            coord = f"({x_py:.1f} mm , {y_py:.1f} mm)"
+                            
+                        # caption = f"{j+1}\n{coord}"
+                        # placeholders_txt[i][j].markdown(
+                        #     caption, unsafe_allow_html=True
+                        # )
+                        placeholders_txt[i][j].markdown(
+                            f"<div style='text-align: center;'>{seg_names[j]}</br>{coord}</div>",
+                            unsafe_allow_html=True,
+                        )
+
                     except Exception as e:
                         logger.warning(f"Failed to display segment {j}: {e}")
             else:
