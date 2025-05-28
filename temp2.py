@@ -1,43 +1,14 @@
-                        if app_config["process"]["save_segment"]:
-                            timestamp = time.strftime("%Y%m%d_%H%M%S")
-                            dir = "workspace/data/image/train/no_anotation"
-                            name = f"{camera_name}_{seg_names[j]}_{timestamp}.jpg"
-                            save_path = os.path.join(dir, name)
-                            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                            cv2.imwrite(save_path, segment)
-                            
-                        # # Probabilistic Houghを使用してエンドポイント検出
-                        detection, point = hough_detector.detect(segment)
-                        
-                        if not detection:
-                            # CascadeClassifierを使用して物体検出
-                            color=(255,0,0)
-                            detection, point = cascade_classifier.detect(segment)
-                        else:
-                            color=(0,0,255)
+2025-05-28 14:08:53,025 - utils.logger - WARNING - Failed to display segment 7: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'rectangle'
+> Overload resolution failed:
+>  - Scalar value for argument 'color' is not numeric
+>  - Can't parse 'rec'. Expected sequence length 4, got 2
+>  - Scalar value for argument 'color' is not numeric
+>  - Can't parse 'rec'. Expected sequence length 4, got 2
 
 
-                        if detection:
-                            kalman_point = st.session_state["kalman_filters"][i][j].update(
-                                point
-                            )
-                            cv2.circle(
-                                segment,
-                                point,
-                                3,
-                                color,  # 赤色
-                                -1,
-                            )
-                        else:
-                            kalman_point = st.session_state["kalman_filters"][i][j].update(
-                                (None, None)
-                            )
-                            if kalman_point[0] is not None and kalman_point[1] is not None:
-                                cv2.circle(
-                                    segment,
-                                    kalman_point,
-                                    3,
-                                    (0, 255, 0),  # 緑色
-                                    -1,
-                                )
-2025-05-28 13:43:52,082 - utils.logger - WARNING - Failed to display segment 3: unsupported operand type(s) for -: 'NoneType' and 'float'
+2025-05-28 14:10:21,023 - utils.logger - WARNING - Failed to display segment 12: OpenCV(4.11.0) :-1: error: (-5:Bad argument) in function 'rectangle'
+> Overload resolution failed:
+>  - Scalar value for argument 'color' is not numeric
+>  - argument for rectangle() given by name ('thickness') and position (4)
+>  - Scalar value for argument 'color' is not numeric
+>  - argument for rectangle() given by name ('thickness') and position (4)
