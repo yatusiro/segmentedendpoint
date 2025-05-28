@@ -16,6 +16,7 @@
                         else:
                             color=(0,0,255)
 
+
                         if detection:
                             kalman_point = st.session_state["kalman_filters"][i][j].update(
                                 point
@@ -39,3 +40,4 @@
                                     (0, 255, 0),  # 緑色
                                     -1,
                                 )
+2025-05-28 13:43:52,082 - utils.logger - WARNING - Failed to display segment 3: unsupported operand type(s) for -: 'NoneType' and 'float'
