@@ -1,53 +1,41 @@
-if not st.session_state["streaming"]:
-        for i, camera_name in enumerate(camera_names):
-            # current_frameがあるか確認する
-            if camera_name in st.session_state["current_frames"]:
-                # frameがある場合、処理を行う
-                current_frame = st.session_state["current_frames"][camera_name]
-                transformer = perspective_transformers[camera_name]
-                extractor = segment_extractors[camera_name]
+                        if app_config["process"]["save_segment"]:
+                            timestamp = time.strftime("%Y%m%d_%H%M%S")
+                            dir = "workspace/data/image/train/no_anotation"
+                            name = f"{camera_name}_{seg_names[j]}_{timestamp}.jpg"
+                            save_path = os.path.join(dir, name)
+                            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                            cv2.imwrite(save_path, segment)
+                            
+                        # # Probabilistic Houghを使用してエンドポイント検出
+                        detection, point = hough_detector.detect(segment)
+                        
+                        if not detection:
+                            # CascadeClassifierを使用して物体検出
+                            color=(255,0,0)
+                            detection, point = cascade_classifier.detect(segment)
+                        else:
+                            color=(0,0,255)
 
-                # raw imageをプレースホルダーに表示
-                placeholders_raw[i].image(
-                    current_frame, channels="BGR", caption=camera_name
-                )
-
-                # 透視投影補正
-                transformed_frame = transformer.transform(current_frame)
-                # プレースホルダーに画像を表示
-                placeholders_perspective[i].image(
-                    transformed_frame, channels="BGR", caption=camera_name
-                )
-
-                # Segmentsを抽出
-                segmented_images = extractor.extract(transformed_frame)
-                seg_names = app_config["camera"]["individual"][i]["segment"]["names"]
-
-                # プレースホルダーに画像を表示
-
-                # for j, segment in enumerate(segmented_images):
-                #     try:
-                #         # 保存したプレースホルダー参照を使用して画像を表示
-                #         placeholders_img[i][j].image(
-                #             segment,
-                #             channels="BGR",
-                #         )
-                #         caption = f"{j+1}\n(-- mm, -- mm)"
-                #         placeholders_txt[i][j].markdown(caption, unsafe_allow_html=True)
-
-                #     except Exception as e:
-                #         logger.warning(f"Failed to display segment {j}: {e}")
-                
-                for j, segment in enumerate(segmented_images):
-                    try:
-                        # 保存したプレースホルダー参照を使用して画像を表示
-                        placeholders_img[i][j].image(
-                            segment,
-                            channels="BGR",
-                            use_container_width=True,
-                        )
-                        placeholders_txt[i][j].markdown(f"div style='text-align: center;'>{seg_names[j]}</br>(-- mm, -- mm)</div>", unsafe_allow_html=True)
-
-                    except Exception as e:
-                        logger.warning(f"Failed to display segment {j}: {e}")
-                
+                        if detection:
+                            kalman_point = st.session_state["kalman_filters"][i][j].update(
+                                point
+                            )
+                            cv2.circle(
+                                segment,
+                                point,
+                                3,
+                                color,  # 赤色
+                                -1,
+                            )
+                        else:
+                            kalman_point = st.session_state["kalman_filters"][i][j].update(
+                                (None, None)
+                            )
+                            if kalman_point[0] is not None and kalman_point[1] is not None:
+                                cv2.circle(
+                                    segment,
+                                    kalman_point,
+                                    3,
+                                    (0, 255, 0),  # 緑色
+                                    -1,
+                                )
